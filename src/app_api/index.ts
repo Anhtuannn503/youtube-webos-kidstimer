@@ -118,6 +118,10 @@ export class ResolveCommandRegistry {
     return registry;
   }
 
+  getHook(command: string) {
+    return this.#cmds.get(command);
+  }
+
   setHook(command: string, fn: ResolveCommandHook) {
     this.#cmds.set(command, fn);
   }
