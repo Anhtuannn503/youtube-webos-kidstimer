@@ -8,6 +8,7 @@ import {
 } from './config.js';
 import './ui.css';
 import { requireElement } from './player_api/helpers';
+import { openParentalControls } from './kids-timer.js';
 
 // We handle key events ourselves.
 window.__spatialNavigation__.keyMode = 'NONE';
@@ -121,6 +122,16 @@ function createOptionsPanel() {
   const elmHeading = document.createElement('h1');
   elmHeading.textContent = 'webOS YouTube Extended';
   elmContainer.appendChild(elmHeading);
+
+  const elmParentalBtn = document.createElement('button');
+  elmParentalBtn.type = 'button';
+  elmParentalBtn.className = 'ytaf-ui-button';
+  elmParentalBtn.textContent = 'Parental Controls / Kids Timer...';
+  elmParentalBtn.addEventListener('click', () => {
+    showOptionsPanel(false);
+    openParentalControls();
+  });
+  elmContainer.appendChild(elmParentalBtn);
 
   elmContainer.appendChild(createConfigCheckbox('enableAdBlock'));
   elmContainer.appendChild(createConfigCheckbox('upgradeThumbnails'));

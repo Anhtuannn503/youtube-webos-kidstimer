@@ -76,6 +76,62 @@ const configOptions = new Map([
       default: false,
       desc: 'Bypass initial account selection on startup'
     }
+  ],
+  [
+    'kidsTimerEnabled',
+    {
+      default: false,
+      desc: 'Enable Kids screen time timer'
+    }
+  ],
+  [
+    'kidsTimerLimitMinutes',
+    {
+      default: 60,
+      desc: 'Kids daily screen time limit (minutes)'
+    }
+  ],
+  [
+    'kidsAccountActive',
+    {
+      default: false,
+      desc: 'Mark current account as Kids account'
+    }
+  ],
+  [
+    'kidsAccountAutoDetect',
+    {
+      default: true,
+      desc: 'Auto-detect Kids or supervised accounts'
+    }
+  ],
+  [
+    'kidsTimerPinHash',
+    {
+      default: '',
+      desc: 'Parent PIN hash'
+    }
+  ],
+  [
+    'kidsTimerDate',
+    {
+      default: '',
+      desc: 'Kids timer tracking date (YYYY-MM-DD)'
+    }
+  ],
+  [
+    'kidsTimerUsedSeconds',
+    {
+      default: 0,
+      desc: 'Kids screen time used today (seconds)'
+    }
+  ],
+  [
+    'kidsTimerExtraSeconds',
+    {
+      default: 0,
+      desc: 'Extra screen time granted today (seconds)'
+    }
   ]
 ]);
 
