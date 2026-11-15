@@ -488,10 +488,30 @@ function showKidsSettingsModal() {
     const autoDetect = configRead('kidsAccountAutoDetect');
     const remaining = getRemainingSeconds();
 
-    statusEl.innerHTML =
-      `Timer: <strong>${enabled ? 'Enabled' : 'Disabled'}</strong><br>` +
-      `Current Profile: <strong>${isKids ? 'Kids Account (Protected)' : 'Standard Account'}</strong><br>` +
-      `Remaining Today: <strong>${formatDuration(remaining)}</strong> (Limit: ${limit} min)`;
+    statusEl.textContent = '';
+
+    const appendStatusLine = (label, value, suffix = '') => {
+      statusEl.appendChild(document.createTextNode(label));
+      const strong = document.createElement('strong');
+      strong.textContent = value;
+      statusEl.appendChild(strong);
+      if (suffix) {
+        statusEl.appendChild(document.createTextNode(suffix));
+      }
+    };
+
+    appendStatusLine('Timer: ', enabled ? 'Enabled' : 'Disabled');
+    statusEl.appendChild(document.createElement('br'));
+    appendStatusLine(
+      'Current Profile: ',
+      isKids ? 'Kids Account (Protected)' : 'Standard Account'
+    );
+    statusEl.appendChild(document.createElement('br'));
+    appendStatusLine(
+      'Remaining Today: ',
+      formatDuration(remaining),
+      ` (Limit: ${limit} min)`
+    );
 
     btnToggleTimer.textContent = `Kids Timer: ${enabled ? 'ON' : 'OFF'}`;
     btnToggleKidsProfile.textContent = `Current Profile: ${isKids ? 'Kids Account' : 'Standard Account'}`;
