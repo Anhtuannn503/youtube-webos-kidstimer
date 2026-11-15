@@ -187,13 +187,20 @@ function showPinModal({ title, subtitle, cancellable, onSubmit, onCancel }) {
 
     if (currentPin.length === PIN_LENGTH) {
       const entered = currentPin;
-      const accepted = onSubmit(entered);
-      if (accepted) {
-        closeModal();
-      } else {
+      try {
+        const accepted = onSubmit(entered);
+        if (accepted) {
+          closeModal();
+        } else {
+          currentPin = '';
+          updateDots();
+          errorEl.textContent = 'Incorrect PIN. Please try again.';
+        }
+      } catch (err) {
         currentPin = '';
         updateDots();
-        errorEl.textContent = 'Incorrect PIN. Please try again.';
+        errorEl.textContent =
+          err instanceof Error ? err.message : 'Error saving PIN.';
       }
     }
   };
@@ -269,12 +276,12 @@ function showSetPinFlow(onSuccess) {
       onSubmit: (pin) => {
         if (pin !== firstPin) {
           showNotification('PINs did not match. Please try again.', 3000, 'red');
-          showSetPinFlow(onSuccess);
+          setTimeout(() => showSetPinFlow(onSuccess), 0);
           return true;
         }
         configWrite('kidsTimerPinHash', hashPin(pin));
         showNotification('Parent PIN saved.', 3000, 'green');
-        onSuccess();
+        setTimeout(() => onSuccess(), 0);
         return true;
       }
     });
@@ -286,7 +293,7 @@ function showSetPinFlow(onSuccess) {
     cancellable: true,
     onSubmit: (pin) => {
       firstPin = pin;
-      askConfirm();
+      setTimeout(() => askConfirm(), 0);
       return true;
     }
   });
