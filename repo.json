@@ -4,7 +4,7 @@
       "id": "youtube.leanback.v4",
       "title": "YouTube AdFree (Kids Timer)",
       "iconUri": "https://raw.githubusercontent.com/Anhtuannn503/youtube-webos-kidstimer/main/assets/largeIcon.png",
-      "manifestUrl": "https://github.com/Anhtuannn503/youtube-webos-kidstimer/releases/download/v0.5.3-kids4/youtube.leanback.v4.manifest.json",
+      "manifestUrl": "https://github.com/Anhtuannn503/youtube-webos-kidstimer/releases/download/v0.5.3-kids5/youtube.leanback.v4.manifest.json",
       "manifest": {
         "id": "youtube.leanback.v4",
         "version": "0.5.3",
@@ -14,9 +14,9 @@
         "iconUri": "https://raw.githubusercontent.com/Anhtuannn503/youtube-webos-kidstimer/main/assets/largeIcon.png",
         "sourceUrl": "https://github.com/Anhtuannn503/youtube-webos-kidstimer",
         "rootRequired": false,
-        "ipkUrl": "https://github.com/Anhtuannn503/youtube-webos-kidstimer/releases/download/v0.5.3-kids4/youtube.leanback.v4_0.5.3_all.ipk",
+        "ipkUrl": "https://github.com/Anhtuannn503/youtube-webos-kidstimer/releases/download/v0.5.3-kids5/youtube.leanback.v4_0.5.3_all.ipk",
         "ipkHash": {
-          "sha256": "52f27b892ed96a7d2f9eac95477c56dde35245d153d1a433dd76c62954fd50d9"
+          "sha256": "efa51513127f3c64b8d39aee15b435c2083e220d972cc32e5ab53222a63933a4"
         }
       },
       "pool": "main",
