@@ -1,0 +1,12 @@
+{
+  "packages": [
+    {
+      "id": "youtube.leanback.v4",
+      "title": "YouTube AdFree (Kids Timer)",
+      "iconUri": "https://raw.githubusercontent.com/Anhtuann503/youtube-webos-kidstimer/main/assets/largeIcon.png",
+      "manifestUrl": "https://github.com/Anhtuann503/youtube-webos-kidstimer/releases/download/v0.5.3-kids1/youtube.leanback.v4.manifest.json",
+      "sourceUrl": "https://github.com/Anhtuann503/youtube-webos-kidstimer",
+      "description": "Ad-free YouTube app for webOS with parental PIN-protected Kids screen time timer."
+    }
+  ]
+}
