@@ -858,16 +858,16 @@ function collectAccountsFromJson(node, depth = 0, found = []) {
   }
 
   const obj = /** @type {Record<string, unknown>} */ (node);
-  if ('accountName' in obj && 'isSelected' in obj) {
+  if ('accountName' in obj) {
     const name = extractYtText(obj.accountName);
-    if (name) {
+    if (name && ('isSelected' in obj || 'accountPhoto' in obj)) {
       const byline = extractYtText(obj.accountByline).toLowerCase();
       const isKids =
         obj.isKidsAccount === true || byline.includes('youtube kids');
       found.push({
         key: extractAccountKey(obj, name),
         name,
-        isSelected: obj.isSelected === true,
+        isSelected: 'isSelected' in obj ? obj.isSelected === true : true,
         isKids
       });
     }
@@ -907,27 +907,72 @@ function setActiveAccount(nextKey, nextName, autoIsKids = false) {
   }
 }
 
-function refreshActiveAccountFromDom() {
-  const candidates = document.querySelectorAll(
-    'ytlr-pivot-bar-item-renderer, [idomkey="account"], ytlr-account-item-renderer'
+function isKidsLogoVisibleInDom() {
+  const logoNodes = document.querySelectorAll(
+    'ytlr-redux-connect-ytlr-logo-entity, [idomkey*="logo"], [aria-label*="YouTube Kids"]'
   );
-  for (const el of candidates) {
-    const label =
-      el.getAttribute('aria-label') || el.textContent?.trim() || '';
+  for (const node of logoNodes) {
+    const label = node.getAttribute('aria-label') || node.textContent || '';
+    if (label.toLowerCase().includes('kids')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function refreshActiveAccountFromDom() {
+  const navIgnore =
+    /^(search|home|subscriptions|library|settings|music|gaming|movies|shorts|news|sports|live|podcasts|sign in|guest|youtube|youtube kids|kids)$/i;
+
+  const isKidsLogo = isKidsLogoVisibleInDom();
+
+  const applyDetectedName = (raw) => {
+    const label = raw.replace(/\s+/g, ' ').trim();
+    if (!label || label.length > 40 || navIgnore.test(label)) {
+      return false;
+    }
+    const nextKey = `name:${label.toLowerCase()}`;
     if (
-      label &&
-      label.length > 0 &&
-      label.length < 40 &&
-      !/^(search|home|subscriptions|library|settings|music|gaming|movies)$/i.test(
-        label
-      )
+      currentAccountKey === DEFAULT_ACCOUNT_KEY ||
+      (currentAccountKey.startsWith('name:') && currentAccountKey !== nextKey)
     ) {
-      if (currentAccountKey === DEFAULT_ACCOUNT_KEY) {
-        setActiveAccount(`name:${label.toLowerCase()}`, label, false);
-      } else {
-        currentAccountName = label;
-      }
-      return;
+      setActiveAccount(nextKey, label, isKidsLogo);
+    } else if (!currentAccountKey.startsWith('yt:')) {
+      currentAccountName = label;
+    }
+    return true;
+  };
+
+  const specific = document.querySelectorAll(
+    'ytlr-guide-entry-renderer, ytlr-pivot-bar-item-renderer, [idomkey*="account"], ytlr-account-item-renderer'
+  );
+  for (const el of specific) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (rect.left < 300 && rect.top < 220) {
+      const text = el.getAttribute('aria-label') || el.textContent || '';
+      if (applyDetectedName(text)) return;
+    }
+  }
+
+  // Fallback: scan visible elements in the top-left sidebar corner (where YouTube TV renders the active profile name)
+  const sidebarEls = document.querySelectorAll(
+    'yt-formatted-string, span, div, [role="button"]'
+  );
+  for (const el of sidebarEls) {
+    if (el.closest('.ytaf-ui-container, .ytaf-kids-overlay')) continue;
+    if (el.children.length > 0) continue;
+    const rect = el.getBoundingClientRect();
+    if (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.left >= 0 &&
+      rect.left < 220 &&
+      rect.top >= 0 &&
+      rect.top < 200
+    ) {
+      const text = el.textContent || '';
+      if (applyDetectedName(text)) return;
     }
   }
 }
@@ -1022,7 +1067,12 @@ async function initAccountHooks() {
   const fetchRegistry = await FetchRegistry.getInstance();
   fetchRegistry.addEventListener('response', async (evt) => {
     const response = evt.detail;
-    if (!response.url.includes('accounts_list')) return;
+    if (
+      !response.url.includes('accounts_list') &&
+      !response.url.includes('/guide')
+    ) {
+      return;
+    }
 
     try {
       const data = await response.clone().json();
