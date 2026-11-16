@@ -10,6 +10,17 @@ import './kids-timer.css';
 const PIN_LENGTH = 4;
 const LIMIT_PRESETS = [15, 30, 45, 60, 90, 120];
 const ARROW_KEY_CODE = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
+const DEFAULT_ACCOUNT_KEY = 'default';
+
+/**
+ * @typedef {Object} KidsProfile
+ * @property {string} name
+ * @property {boolean} isKids
+ * @property {number} limitMinutes
+ * @property {string} date
+ * @property {number} usedSeconds
+ * @property {number} extraSeconds
+ */
 
 /**
  * @typedef {Object} ModalEntry
@@ -28,10 +39,11 @@ let lockOverlay = null;
 /** @type {import('./player_api/yt-api').YTPlayer | null} */
 let playerInstance = null;
 
-let usedSecondsCache = 0;
-let ticksSinceSave = 0;
-let warned5Min = false;
-let warned1Min = false;
+let currentAccountKey = DEFAULT_ACCOUNT_KEY;
+let currentAccountName = 'Current Account';
+let pendingSeconds = 0;
+let warned5MinForKey = '';
+let warned1MinForKey = '';
 
 function getTodayKey() {
   const now = new Date();
@@ -53,34 +65,119 @@ function verifyPin(pin) {
   return hashPin(pin) === configRead('kidsTimerPinHash');
 }
 
-function ensureTodayState() {
-  const today = getTodayKey();
-  if (configRead('kidsTimerDate') !== today) {
-    configWrite('kidsTimerDate', today);
-    configWrite('kidsTimerUsedSeconds', 0);
-    configWrite('kidsTimerExtraSeconds', 0);
-    usedSecondsCache = 0;
-    ticksSinceSave = 0;
-    warned5Min = false;
-    warned1Min = false;
-  } else if (ticksSinceSave === 0) {
-    usedSecondsCache = configRead('kidsTimerUsedSeconds');
+/**
+ * @returns {Record<string, KidsProfile>}
+ */
+function getProfilesMap() {
+  const raw = configRead('kidsProfiles');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
   }
+  return { ...raw };
+}
+
+/**
+ * @param {Record<string, KidsProfile>} profiles
+ */
+function saveProfilesMap(profiles) {
+  configWrite('kidsProfiles', profiles);
+}
+
+/**
+ * @param {string} [key]
+ * @param {string} [fallbackName]
+ * @returns {KidsProfile}
+ */
+function getOrCreateProfile(key = currentAccountKey, fallbackName) {
+  const profiles = getProfilesMap();
+  const today = getTodayKey();
+  const existing = profiles[key];
+
+  if (existing) {
+    let changed = false;
+    const profile = { ...existing };
+
+    if (
+      fallbackName &&
+      fallbackName !== 'Current Account' &&
+      profile.name !== fallbackName
+    ) {
+      profile.name = fallbackName;
+      changed = true;
+    }
+
+    if (profile.date !== today) {
+      profile.date = today;
+      profile.usedSeconds = 0;
+      profile.extraSeconds = 0;
+      changed = true;
+      if (key === currentAccountKey) {
+        pendingSeconds = 0;
+        warned5MinForKey = '';
+        warned1MinForKey = '';
+      }
+    }
+
+    if (changed) {
+      profiles[key] = profile;
+      saveProfilesMap(profiles);
+    }
+
+    return profile;
+  }
+
+  /** @type {KidsProfile} */
+  const created = {
+    name: fallbackName || (key === DEFAULT_ACCOUNT_KEY ? 'Default Account' : key),
+    isKids: false,
+    limitMinutes: configRead('kidsTimerLimitMinutes') || 60,
+    date: today,
+    usedSeconds: 0,
+    extraSeconds: 0
+  };
+  profiles[key] = created;
+  saveProfilesMap(profiles);
+  return created;
+}
+
+/**
+ * @param {string} key
+ * @param {Partial<KidsProfile>} patch
+ * @returns {KidsProfile}
+ */
+function updateProfile(key, patch) {
+  const profiles = getProfilesMap();
+  const current = getOrCreateProfile(key);
+  const updated = { ...current, ...patch };
+  profiles[key] = updated;
+  saveProfilesMap(profiles);
+  return updated;
+}
+
+function isCurrentAccountKids() {
+  const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+  return Boolean(profile.isKids);
+}
+
+/**
+ * @param {KidsProfile} profile
+ * @param {string} [key]
+ * @returns {number}
+ */
+function getProfileRemainingSeconds(profile, key) {
+  const extraPending = key === currentAccountKey ? pendingSeconds : 0;
+  const totalSeconds = profile.limitMinutes * 60 + profile.extraSeconds;
+  return Math.max(0, totalSeconds - (profile.usedSeconds + extraPending));
 }
 
 function flushUsedSeconds() {
-  if (ticksSinceSave > 0) {
-    configWrite('kidsTimerUsedSeconds', usedSecondsCache);
-    ticksSinceSave = 0;
+  if (pendingSeconds > 0) {
+    const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+    updateProfile(currentAccountKey, {
+      usedSeconds: profile.usedSeconds + pendingSeconds
+    });
+    pendingSeconds = 0;
   }
-}
-
-function getRemainingSeconds() {
-  ensureTodayState();
-  const totalSeconds =
-    configRead('kidsTimerLimitMinutes') * 60 +
-    configRead('kidsTimerExtraSeconds');
-  return Math.max(0, totalSeconds - usedSecondsCache);
 }
 
 function formatDuration(totalSeconds) {
@@ -324,32 +421,43 @@ function hideLockOverlay() {
   lockOverlay = null;
 }
 
-function extendTime(minutes) {
-  ensureTodayState();
-  const extra = configRead('kidsTimerExtraSeconds') + minutes * 60;
-  configWrite('kidsTimerExtraSeconds', extra);
-  warned5Min = false;
-  warned1Min = false;
-  hideLockOverlay();
-  showNotification(`Kids Timer extended by ${minutes} minutes`, 4000, 'green');
+function extendTime(minutes, key = currentAccountKey) {
+  const profile = getOrCreateProfile(key);
+  updateProfile(key, { extraSeconds: profile.extraSeconds + minutes * 60 });
+  if (key === currentAccountKey) {
+    warned5MinForKey = '';
+    warned1MinForKey = '';
+    hideLockOverlay();
+  }
+  showNotification(
+    `Extended ${profile.name} by ${minutes} minutes`,
+    4000,
+    'green'
+  );
 }
 
-function resetTodayTimer() {
-  configWrite('kidsTimerDate', getTodayKey());
-  configWrite('kidsTimerUsedSeconds', 0);
-  configWrite('kidsTimerExtraSeconds', 0);
-  usedSecondsCache = 0;
-  ticksSinceSave = 0;
-  warned5Min = false;
-  warned1Min = false;
-  hideLockOverlay();
-  showNotification('Kids Timer reset for today', 4000, 'green');
+function resetTodayTimer(key = currentAccountKey) {
+  const profile = getOrCreateProfile(key);
+  updateProfile(key, {
+    date: getTodayKey(),
+    usedSeconds: 0,
+    extraSeconds: 0
+  });
+  if (key === currentAccountKey) {
+    pendingSeconds = 0;
+    warned5MinForKey = '';
+    warned1MinForKey = '';
+    hideLockOverlay();
+  }
+  showNotification(`Timer reset for ${profile.name}`, 4000, 'green');
 }
 
 function showLockOverlay() {
   if (lockOverlay) return;
 
   pausePlayback();
+
+  const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
 
   const overlay = document.createElement('div');
   overlay.className = 'ytaf-kids-overlay';
@@ -358,7 +466,7 @@ function showLockOverlay() {
   card.className = 'ytaf-kids-card';
 
   const heading = document.createElement('h2');
-  heading.textContent = "Time's Up!";
+  heading.textContent = `Time's Up, ${profile.name}!`;
   card.appendChild(heading);
 
   const subEl = document.createElement('p');
@@ -376,7 +484,7 @@ function showLockOverlay() {
   btn15.textContent = 'Extend +15 min (Parent PIN)';
   btn15.addEventListener('click', () => {
     requireParentPin('Enter Parent PIN to add 15 minutes', () =>
-      extendTime(15)
+      extendTime(15, currentAccountKey)
     );
   });
 
@@ -386,7 +494,7 @@ function showLockOverlay() {
   btn30.textContent = 'Extend +30 min (Parent PIN)';
   btn30.addEventListener('click', () => {
     requireParentPin('Enter Parent PIN to add 30 minutes', () =>
-      extendTime(30)
+      extendTime(30, currentAccountKey)
     );
   });
 
@@ -396,7 +504,7 @@ function showLockOverlay() {
   btnReset.textContent = 'Unlock / Reset Today (Parent PIN)';
   btnReset.addEventListener('click', () => {
     requireParentPin('Enter Parent PIN to reset today', () =>
-      resetTodayTimer()
+      resetTodayTimer(currentAccountKey)
     );
   });
 
@@ -415,7 +523,87 @@ function showLockOverlay() {
   });
 }
 
+function showManageProfilesModal(onBackToSettings) {
+  const overlay = document.createElement('div');
+  overlay.className = 'ytaf-kids-overlay';
+
+  const card = document.createElement('div');
+  card.className = 'ytaf-kids-card';
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Manage All Profiles';
+  card.appendChild(heading);
+
+  const subEl = document.createElement('p');
+  subEl.className = 'ytaf-kids-subtitle';
+  subEl.textContent =
+    'Select a profile to toggle between Kids Account (with timer) and Adult Account (no timer).';
+  card.appendChild(subEl);
+
+  const listEl = document.createElement('div');
+  listEl.className = 'ytaf-kids-actions';
+  card.appendChild(listEl);
+
+  const closeAndBack = () => {
+    removeModal(overlay);
+    if (onBackToSettings) onBackToSettings();
+  };
+
+  const renderList = () => {
+    listEl.textContent = '';
+    const profiles = getProfilesMap();
+    const keys = Object.keys(profiles);
+
+    if (keys.length === 0) {
+      const emptyEl = document.createElement('p');
+      emptyEl.className = 'ytaf-kids-subtitle';
+      emptyEl.textContent = 'No profiles detected yet.';
+      listEl.appendChild(emptyEl);
+    } else {
+      for (const key of keys) {
+        const p = getOrCreateProfile(key);
+        const isCurrent = key === currentAccountKey;
+        const remaining = formatDuration(getProfileRemainingSeconds(p, key));
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ytaf-kids-btn';
+        const roleLabel = p.isKids
+          ? `Kids (${p.limitMinutes}m, ${remaining} left)`
+          : 'Adult (No Timer)';
+        btn.textContent = `${p.name}${isCurrent ? ' [Active]' : ''}: ${roleLabel}`;
+        btn.addEventListener('click', () => {
+          updateProfile(key, { isKids: !p.isKids });
+          if (isCurrent && p.isKids) {
+            hideLockOverlay();
+          }
+          renderList();
+        });
+        listEl.appendChild(btn);
+      }
+    }
+
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'ytaf-kids-btn ytaf-kids-btn-primary';
+    backBtn.textContent = 'Back';
+    backBtn.addEventListener('click', closeAndBack);
+    listEl.appendChild(backBtn);
+    focusFirstInModal(overlay);
+  };
+
+  overlay.appendChild(card);
+  pushModal({
+    element: overlay,
+    onBack: closeAndBack,
+    onDigit: null,
+    onBackspace: null
+  });
+  renderList();
+}
+
 function showKidsSettingsModal() {
+  refreshActiveAccountFromDom();
+
   const overlay = document.createElement('div');
   overlay.className = 'ytaf-kids-overlay';
 
@@ -465,6 +653,11 @@ function showKidsSettingsModal() {
   rowExtra.appendChild(btnAdd15);
   rowExtra.appendChild(btnReset);
 
+  const btnManageProfiles = document.createElement('button');
+  btnManageProfiles.type = 'button';
+  btnManageProfiles.className = 'ytaf-kids-btn';
+  btnManageProfiles.textContent = 'Manage All Profiles...';
+
   const rowBottom = document.createElement('div');
   rowBottom.className = 'ytaf-kids-row';
 
@@ -483,10 +676,9 @@ function showKidsSettingsModal() {
 
   const refreshUI = () => {
     const enabled = configRead('kidsTimerEnabled');
-    const isKids = configRead('kidsAccountActive');
-    const limit = configRead('kidsTimerLimitMinutes');
+    const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
     const autoDetect = configRead('kidsAccountAutoDetect');
-    const remaining = getRemainingSeconds();
+    const remaining = getProfileRemainingSeconds(profile, currentAccountKey);
 
     statusEl.textContent = '';
 
@@ -500,23 +692,27 @@ function showKidsSettingsModal() {
       }
     };
 
-    appendStatusLine('Timer: ', enabled ? 'Enabled' : 'Disabled');
+    appendStatusLine('Master Timer: ', enabled ? 'Enabled' : 'Disabled');
+    statusEl.appendChild(document.createElement('br'));
+    appendStatusLine('Logged-in Account: ', profile.name);
     statusEl.appendChild(document.createElement('br'));
     appendStatusLine(
-      'Current Profile: ',
-      isKids ? 'Kids Account (Protected)' : 'Standard Account'
+      'Account Type: ',
+      profile.isKids ? 'Kids Account (Timer Active)' : 'Adult Account (No Timer)'
     );
-    statusEl.appendChild(document.createElement('br'));
-    appendStatusLine(
-      'Remaining Today: ',
-      formatDuration(remaining),
-      ` (Limit: ${limit} min)`
-    );
+    if (profile.isKids) {
+      statusEl.appendChild(document.createElement('br'));
+      appendStatusLine(
+        'Remaining Today: ',
+        formatDuration(remaining),
+        ` (Limit: ${profile.limitMinutes} min)`
+      );
+    }
 
-    btnToggleTimer.textContent = `Kids Timer: ${enabled ? 'ON' : 'OFF'}`;
-    btnToggleKidsProfile.textContent = `Current Profile: ${isKids ? 'Kids Account' : 'Standard Account'}`;
-    btnLimit.textContent = `Daily Limit: ${limit} min (Press OK to cycle)`;
-    btnAutoDetect.textContent = `Auto-detect Kids Profile: ${autoDetect ? 'ON' : 'OFF'}`;
+    btnToggleTimer.textContent = `Master Kids Timer: ${enabled ? 'ON' : 'OFF'}`;
+    btnToggleKidsProfile.textContent = `Set "${profile.name}": ${profile.isKids ? 'Kids Account (Timer)' : 'Adult Account (No Timer)'}`;
+    btnLimit.textContent = `Daily Limit for "${profile.name}": ${profile.limitMinutes} min (Cycle)`;
+    btnAutoDetect.textContent = `Auto-detect YouTube Kids: ${autoDetect ? 'ON' : 'OFF'}`;
   };
 
   btnToggleTimer.addEventListener('click', () => {
@@ -527,17 +723,18 @@ function showKidsSettingsModal() {
   });
 
   btnToggleKidsProfile.addEventListener('click', () => {
-    const next = !configRead('kidsAccountActive');
-    configWrite('kidsAccountActive', next);
+    const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+    const next = !profile.isKids;
+    updateProfile(currentAccountKey, { isKids: next });
     if (!next) hideLockOverlay();
     refreshUI();
   });
 
   btnLimit.addEventListener('click', () => {
-    const current = configRead('kidsTimerLimitMinutes');
-    const idx = LIMIT_PRESETS.indexOf(current);
+    const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+    const idx = LIMIT_PRESETS.indexOf(profile.limitMinutes);
     const next = LIMIT_PRESETS[(idx + 1) % LIMIT_PRESETS.length] ?? 60;
-    configWrite('kidsTimerLimitMinutes', next);
+    updateProfile(currentAccountKey, { limitMinutes: next });
     refreshUI();
   });
 
@@ -547,18 +744,23 @@ function showKidsSettingsModal() {
   });
 
   btnAdd15.addEventListener('click', () => {
-    extendTime(15);
+    extendTime(15, currentAccountKey);
     refreshUI();
   });
 
   btnReset.addEventListener('click', () => {
-    resetTodayTimer();
+    resetTodayTimer(currentAccountKey);
     refreshUI();
   });
 
   const closeSettings = () => {
     removeModal(overlay);
   };
+
+  btnManageProfiles.addEventListener('click', () => {
+    closeSettings();
+    showManageProfilesModal(() => showKidsSettingsModal());
+  });
 
   btnChangePin.addEventListener('click', () => {
     closeSettings();
@@ -572,6 +774,7 @@ function showKidsSettingsModal() {
   actions.appendChild(btnLimit);
   actions.appendChild(btnAutoDetect);
   actions.appendChild(rowExtra);
+  actions.appendChild(btnManageProfiles);
   actions.appendChild(rowBottom);
 
   card.appendChild(actions);
@@ -599,35 +802,134 @@ export function openParentalControls() {
 }
 
 /**
- * Recursively scan YouTube accounts_list JSON for a selected kids/supervised profile.
+ * Extract readable text from YouTube simpleText or runs object.
+ * @param {unknown} val
+ * @returns {string}
+ */
+function extractYtText(val) {
+  if (!val || typeof val !== 'object') return '';
+  const obj = /** @type {Record<string, unknown>} */ (val);
+  if (typeof obj.simpleText === 'string') return obj.simpleText.trim();
+  if (Array.isArray(obj.runs)) {
+    return obj.runs
+      .map((r) =>
+        r && typeof r === 'object' && typeof r.text === 'string' ? r.text : ''
+      )
+      .join('')
+      .trim();
+  }
+  return '';
+}
+
+/**
+ * Extract stable account key from YouTube accountItemRenderer.
+ * @param {Record<string, unknown>} obj
+ * @param {string} name
+ * @returns {string}
+ */
+function extractAccountKey(obj, name) {
+  const endpoint = obj.serviceEndpoint;
+  if (endpoint && typeof endpoint === 'object') {
+    const jsonStr = JSON.stringify(endpoint);
+    const match = /"(?:datasyncIdToken|pageIdToken|obfuscatedGaiaId)"\s*:\s*"([^"]+)"/.exec(
+      jsonStr
+    );
+    if (match?.[1]) {
+      return `yt:${match[1]}`;
+    }
+  }
+  return `name:${name.toLowerCase()}`;
+}
+
+/**
+ * Recursively scan YouTube accounts_list JSON for account items.
  * @param {unknown} node
  * @param {number} depth
- * @returns {boolean}
+ * @param {Array<{ key: string, name: string, isSelected: boolean, isKids: boolean }>} found
  */
-function detectSelectedKidsAccount(node, depth = 0) {
-  if (depth > 12 || !node || typeof node !== 'object') return false;
+function collectAccountsFromJson(node, depth = 0, found = []) {
+  if (depth > 14 || !node || typeof node !== 'object') return found;
 
   if (Array.isArray(node)) {
-    return node.some((item) => detectSelectedKidsAccount(item, depth + 1));
+    for (const item of node) {
+      collectAccountsFromJson(item, depth + 1, found);
+    }
+    return found;
   }
 
   const obj = /** @type {Record<string, unknown>} */ (node);
-  if (obj.isSelected === true) {
-    if (obj.isKidsAccount === true || obj.isSupervised === true) {
-      return true;
-    }
-    const serialized = JSON.stringify(obj).toLowerCase();
-    if (
-      serialized.includes('youtube kids') ||
-      serialized.includes('"supervised"')
-    ) {
-      return true;
+  if ('accountName' in obj && 'isSelected' in obj) {
+    const name = extractYtText(obj.accountName);
+    if (name) {
+      const byline = extractYtText(obj.accountByline).toLowerCase();
+      const isKids =
+        obj.isKidsAccount === true || byline.includes('youtube kids');
+      found.push({
+        key: extractAccountKey(obj, name),
+        name,
+        isSelected: obj.isSelected === true,
+        isKids
+      });
     }
   }
 
-  return Object.values(obj).some((val) =>
-    detectSelectedKidsAccount(val, depth + 1)
+  for (const val of Object.values(obj)) {
+    collectAccountsFromJson(val, depth + 1, found);
+  }
+  return found;
+}
+
+/**
+ * Switch the active tracked account and update lock state accordingly.
+ * @param {string} nextKey
+ * @param {string} nextName
+ * @param {boolean} [autoIsKids]
+ */
+function setActiveAccount(nextKey, nextName, autoIsKids = false) {
+  if (nextKey !== currentAccountKey) {
+    flushUsedSeconds();
+    currentAccountKey = nextKey;
+    currentAccountName = nextName;
+    pendingSeconds = 0;
+    warned5MinForKey = '';
+    warned1MinForKey = '';
+  } else if (nextName && nextName !== 'Current Account') {
+    currentAccountName = nextName;
+  }
+
+  const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+  if (autoIsKids && configRead('kidsAccountAutoDetect') && !profile.isKids) {
+    updateProfile(currentAccountKey, { isKids: true });
+  }
+
+  if (!configRead('kidsTimerEnabled') || !isCurrentAccountKids()) {
+    hideLockOverlay();
+  }
+}
+
+function refreshActiveAccountFromDom() {
+  const candidates = document.querySelectorAll(
+    'ytlr-pivot-bar-item-renderer, [idomkey="account"], ytlr-account-item-renderer'
   );
+  for (const el of candidates) {
+    const label =
+      el.getAttribute('aria-label') || el.textContent?.trim() || '';
+    if (
+      label &&
+      label.length > 0 &&
+      label.length < 40 &&
+      !/^(search|home|subscriptions|library|settings|music|gaming|movies)$/i.test(
+        label
+      )
+    ) {
+      if (currentAccountKey === DEFAULT_ACCOUNT_KEY) {
+        setActiveAccount(`name:${label.toLowerCase()}`, label, false);
+      } else {
+        currentAccountName = label;
+      }
+      return;
+    }
+  }
 }
 
 function handleModalKeyEvent(evt) {
@@ -693,7 +995,7 @@ async function initAccountHooks() {
       if (
         !configRead('autoAccountSelect') &&
         configRead('kidsTimerEnabled') &&
-        configRead('kidsAccountActive')
+        isCurrentAccountKids()
       ) {
         pausePlayback();
         requireParentPin('Enter Parent PIN to switch account', proceed);
@@ -711,21 +1013,30 @@ async function initAccountHooks() {
       'isSameIdentity' in context &&
       context.isSameIdentity === false
     ) {
-      configWrite('kidsAccountActive', false);
+      setActiveAccount(DEFAULT_ACCOUNT_KEY, 'Current Account', false);
+      setTimeout(() => refreshActiveAccountFromDom(), 1500);
     }
     resolveCommand(payload, extra);
   });
 
   const fetchRegistry = await FetchRegistry.getInstance();
   fetchRegistry.addEventListener('response', async (evt) => {
-    if (!configRead('kidsAccountAutoDetect')) return;
     const response = evt.detail;
     if (!response.url.includes('accounts_list')) return;
 
     try {
       const data = await response.clone().json();
-      if (detectSelectedKidsAccount(data)) {
-        configWrite('kidsAccountActive', true);
+      const accounts = collectAccountsFromJson(data);
+      for (const acc of accounts) {
+        getOrCreateProfile(acc.key, acc.name);
+        if (acc.isKids && configRead('kidsAccountAutoDetect')) {
+          updateProfile(acc.key, { isKids: true });
+        }
+      }
+
+      const selected = accounts.find((acc) => acc.isSelected);
+      if (selected) {
+        setActiveAccount(selected.key, selected.name, selected.isKids);
       }
     } catch (err) {
       console.debug('[KidsTimer] Could not parse accounts_list:', err);
@@ -739,19 +1050,21 @@ async function initPlaybackMonitor() {
 }
 
 function startTimerLoop() {
-  ensureTodayState();
-
   setInterval(() => {
+    if (currentAccountKey === DEFAULT_ACCOUNT_KEY) {
+      refreshActiveAccountFromDom();
+    }
+
     const enabled = configRead('kidsTimerEnabled');
-    const isKids = configRead('kidsAccountActive');
+    const isKids = isCurrentAccountKids();
 
     if (!enabled || !isKids) {
       hideLockOverlay();
       return;
     }
 
-    ensureTodayState();
-    const remaining = getRemainingSeconds();
+    const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+    const remaining = getProfileRemainingSeconds(profile, currentAccountKey);
 
     if (remaining <= 0) {
       flushUsedSeconds();
@@ -767,22 +1080,38 @@ function startTimerLoop() {
     ) {
       const state = playerInstance.getPlayerStateObject();
       if (state.isPlaying && !playerInstance.isInline()) {
-        usedSecondsCache += 1;
-        ticksSinceSave += 1;
+        pendingSeconds += 1;
+        const updatedRemaining = getProfileRemainingSeconds(
+          profile,
+          currentAccountKey
+        );
 
-        const updatedRemaining = getRemainingSeconds();
-        if (updatedRemaining === 300 && !warned5Min) {
-          warned5Min = true;
-          showNotification('Kids Timer: 5 minutes remaining', 5000, 'yellow');
-        } else if (updatedRemaining === 60 && !warned1Min) {
-          warned1Min = true;
-          showNotification('Kids Timer: 1 minute remaining', 5000, 'red');
+        if (
+          updatedRemaining === 300 &&
+          warned5MinForKey !== currentAccountKey
+        ) {
+          warned5MinForKey = currentAccountKey;
+          showNotification(
+            `Kids Timer (${profile.name}): 5 minutes remaining`,
+            5000,
+            'yellow'
+          );
+        } else if (
+          updatedRemaining === 60 &&
+          warned1MinForKey !== currentAccountKey
+        ) {
+          warned1MinForKey = currentAccountKey;
+          showNotification(
+            `Kids Timer (${profile.name}): 1 minute remaining`,
+            5000,
+            'red'
+          );
         }
 
         if (updatedRemaining <= 0) {
           flushUsedSeconds();
           showLockOverlay();
-        } else if (ticksSinceSave >= 10) {
+        } else if (pendingSeconds >= 10) {
           flushUsedSeconds();
         }
       }
@@ -791,12 +1120,6 @@ function startTimerLoop() {
 }
 
 configAddChangeListener('kidsTimerEnabled', (evt) => {
-  if (!evt.detail.newValue) {
-    hideLockOverlay();
-  }
-});
-
-configAddChangeListener('kidsAccountActive', (evt) => {
   if (!evt.detail.newValue) {
     hideLockOverlay();
   }

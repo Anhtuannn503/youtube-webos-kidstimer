@@ -132,6 +132,13 @@ const configOptions = new Map([
       default: 0,
       desc: 'Extra screen time granted today (seconds)'
     }
+  ],
+  [
+    'kidsProfiles',
+    {
+      default: {},
+      desc: 'Per-account Kids Timer profiles'
+    }
   ]
 ]);
 
