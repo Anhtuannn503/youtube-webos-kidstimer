@@ -922,7 +922,7 @@ function isKidsLogoVisibleInDom() {
 
 function refreshActiveAccountFromDom() {
   const navIgnore =
-    /^(search|home|subscriptions|library|settings|music|gaming|movies|shorts|news|sports|live|podcasts|sign in|guest|youtube|youtube kids|kids)$/i;
+    /^(search|zoeken|home|start|subscriptions|abonnementen|library|bibliotheek|settings|instellingen|music|muziek|gaming|gamen|movies|films|shorts|news|nieuws|sports|sport|live|podcasts|sign in|inloggen|guest|gast|youtube|youtube kids|kids|switch account|account wisselen)$/i;
 
   const isKidsLogo = isKidsLogoVisibleInDom();
 
@@ -943,37 +943,33 @@ function refreshActiveAccountFromDom() {
     return true;
   };
 
+  /** @type {Array<{ top: number, text: string }>} */
+  const candidates = [];
+
   const specific = document.querySelectorAll(
-    'ytlr-guide-entry-renderer, ytlr-pivot-bar-item-renderer, [idomkey*="account"], ytlr-account-item-renderer'
+    'ytlr-guide-entry-renderer, ytlr-pivot-bar-item-renderer, [idomkey*="account"], ytlr-account-item-renderer, yt-formatted-string, span, div, [role="button"]'
   );
   for (const el of specific) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    if (rect.left < 300 && rect.top < 220) {
-      const text = el.getAttribute('aria-label') || el.textContent || '';
-      if (applyDetectedName(text)) return;
-    }
-  }
-
-  // Fallback: scan visible elements in the top-left sidebar corner (where YouTube TV renders the active profile name)
-  const sidebarEls = document.querySelectorAll(
-    'yt-formatted-string, span, div, [role="button"]'
-  );
-  for (const el of sidebarEls) {
     if (el.closest('.ytaf-ui-container, .ytaf-kids-overlay')) continue;
-    if (el.children.length > 0) continue;
     const rect = el.getBoundingClientRect();
     if (
       rect.width > 0 &&
       rect.height > 0 &&
       rect.left >= 0 &&
-      rect.left < 220 &&
+      rect.left < 240 &&
       rect.top >= 0 &&
-      rect.top < 200
+      rect.top < 220
     ) {
-      const text = el.textContent || '';
-      if (applyDetectedName(text)) return;
+      const text = el.getAttribute('aria-label') || el.textContent || '';
+      if (text.trim()) {
+        candidates.push({ top: rect.top, text });
+      }
     }
+  }
+
+  candidates.sort((a, b) => a.top - b.top);
+  for (const item of candidates) {
+    if (applyDetectedName(item.text)) return;
   }
 }
 
@@ -1068,7 +1064,7 @@ async function initAccountHooks() {
   fetchRegistry.addEventListener('response', async (evt) => {
     const response = evt.detail;
     if (
-      !response.url.includes('accounts_list') &&
+      !response.url.includes('account') &&
       !response.url.includes('/guide')
     ) {
       return;
