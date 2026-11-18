@@ -123,6 +123,39 @@
   text-align: left;
 }
 
+.ytaf-kids-weekly-list {
+  max-height: 22rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  text-align: left;
+}
+
+.ytaf-kids-weekly-user {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  padding: 0.8rem 1rem;
+  font-size: 1.05rem;
+  line-height: 1.45;
+}
+
+.ytaf-kids-weekly-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.ytaf-kids-weekly-day {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0.35rem 0.2rem;
+}
+
 .ytaf-ui-button {
   display: block;
   margin-top: 0.75rem;

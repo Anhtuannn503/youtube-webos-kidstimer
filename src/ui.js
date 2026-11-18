@@ -126,7 +126,7 @@ function createOptionsPanel() {
   const elmParentalBtn = document.createElement('button');
   elmParentalBtn.type = 'button';
   elmParentalBtn.className = 'ytaf-ui-button';
-  elmParentalBtn.textContent = 'Parental Controls / Kids Timer...';
+  elmParentalBtn.textContent = 'Ouderlijk toezicht / Kindertimer...';
   elmParentalBtn.addEventListener('click', () => {
     showOptionsPanel(false);
     openParentalControls();

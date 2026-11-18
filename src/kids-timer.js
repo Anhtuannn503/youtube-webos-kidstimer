@@ -11,6 +11,7 @@ const PIN_LENGTH = 4;
 const LIMIT_PRESETS = [15, 30, 45, 60, 90, 120];
 const ARROW_KEY_CODE = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
 const DEFAULT_ACCOUNT_KEY = 'default';
+const DAY_NAMES_NL = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
 
 /**
  * @typedef {Object} KidsProfile
@@ -20,6 +21,7 @@ const DEFAULT_ACCOUNT_KEY = 'default';
  * @property {string} date
  * @property {number} usedSeconds
  * @property {number} extraSeconds
+ * @property {Record<string, number>} [history]
  */
 
 /**
@@ -39,18 +41,32 @@ let lockOverlay = null;
 /** @type {import('./player_api/yt-api').YTPlayer | null} */
 let playerInstance = null;
 
+/** @type {ResolveCommandRegistry | null} */
+let resolveRegistry = null;
+
+/** @type {import('./app_api/index').ResolveCommandPayload | null} */
+let lastAccountSelectorPayload = null;
+
 let currentAccountKey = DEFAULT_ACCOUNT_KEY;
-let currentAccountName = 'Current Account';
+let currentAccountName = 'Huidig account';
 let pendingSeconds = 0;
 let warned5MinForKey = '';
 let warned1MinForKey = '';
+let switchingFromLockUntil = 0;
+
+/**
+ * @param {Date} [d]
+ * @returns {string}
+ */
+function formatDateKey(d = new Date()) {
+  const year = String(d.getFullYear());
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 function getTodayKey() {
-  const now = new Date();
-  const year = String(now.getFullYear());
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return formatDateKey(new Date());
 }
 
 function hashPin(pin) {
@@ -63,6 +79,26 @@ function hasPin() {
 
 function verifyPin(pin) {
   return hashPin(pin) === configRead('kidsTimerPinHash');
+}
+
+/**
+ * Keep only the last 14 days of history to keep storage compact.
+ * @param {Record<string, number> | undefined} history
+ * @returns {Record<string, number>}
+ */
+function pruneHistory(history) {
+  if (!history || typeof history !== 'object') return {};
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 14);
+  const cutoffKey = formatDateKey(cutoff);
+  /** @type {Record<string, number>} */
+  const pruned = {};
+  for (const [k, v] of Object.entries(history)) {
+    if (k >= cutoffKey && typeof v === 'number' && v >= 0) {
+      pruned[k] = v;
+    }
+  }
+  return pruned;
 }
 
 /**
@@ -97,9 +133,17 @@ function getOrCreateProfile(key = currentAccountKey, fallbackName) {
     let changed = false;
     const profile = { ...existing };
 
+    if (!profile.history || typeof profile.history !== 'object') {
+      profile.history = {};
+      if (profile.date && profile.usedSeconds > 0) {
+        profile.history[profile.date] = profile.usedSeconds;
+      }
+      changed = true;
+    }
+
     if (
       fallbackName &&
-      fallbackName !== 'Current Account' &&
+      fallbackName !== 'Huidig account' &&
       profile.name !== fallbackName
     ) {
       profile.name = fallbackName;
@@ -107,6 +151,12 @@ function getOrCreateProfile(key = currentAccountKey, fallbackName) {
     }
 
     if (profile.date !== today) {
+      if (profile.date && profile.usedSeconds > 0) {
+        profile.history = pruneHistory({
+          ...profile.history,
+          [profile.date]: profile.usedSeconds
+        });
+      }
       profile.date = today;
       profile.usedSeconds = 0;
       profile.extraSeconds = 0;
@@ -128,12 +178,14 @@ function getOrCreateProfile(key = currentAccountKey, fallbackName) {
 
   /** @type {KidsProfile} */
   const created = {
-    name: fallbackName || (key === DEFAULT_ACCOUNT_KEY ? 'Default Account' : key),
+    name:
+      fallbackName || (key === DEFAULT_ACCOUNT_KEY ? 'Standaardaccount' : key),
     isKids: false,
     limitMinutes: configRead('kidsTimerLimitMinutes') || 60,
     date: today,
     usedSeconds: 0,
-    extraSeconds: 0
+    extraSeconds: 0,
+    history: {}
   };
   profiles[key] = created;
   saveProfilesMap(profiles);
@@ -173,8 +225,15 @@ function getProfileRemainingSeconds(profile, key) {
 function flushUsedSeconds() {
   if (pendingSeconds > 0) {
     const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
+    const today = getTodayKey();
+    const nextUsed = profile.usedSeconds + pendingSeconds;
+    const nextHistory = pruneHistory({
+      ...(profile.history || {}),
+      [today]: nextUsed
+    });
     updateProfile(currentAccountKey, {
-      usedSeconds: profile.usedSeconds + pendingSeconds
+      usedSeconds: nextUsed,
+      history: nextHistory
     });
     pendingSeconds = 0;
   }
@@ -184,6 +243,14 @@ function formatDuration(totalSeconds) {
   const mins = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatShortHoursMinutes(totalSeconds) {
+  const totalMins = Math.round(totalSeconds / 60);
+  if (totalMins < 60) return `${totalMins}m`;
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return m > 0 ? `${h}u ${m}m` : `${h}u`;
 }
 
 function pausePlayback() {
@@ -291,13 +358,13 @@ function showPinModal({ title, subtitle, cancellable, onSubmit, onCancel }) {
         } else {
           currentPin = '';
           updateDots();
-          errorEl.textContent = 'Incorrect PIN. Please try again.';
+          errorEl.textContent = 'Onjuiste pincode. Probeer het opnieuw.';
         }
       } catch (err) {
         currentPin = '';
         updateDots();
         errorEl.textContent =
-          err instanceof Error ? err.message : 'Error saving PIN.';
+          err instanceof Error ? err.message : 'Fout bij opslaan van pincode.';
       }
     }
   };
@@ -312,7 +379,7 @@ function showPinModal({ title, subtitle, cancellable, onSubmit, onCancel }) {
   const numpad = document.createElement('div');
   numpad.className = 'ytaf-kids-numpad';
 
-  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'CLR', '0', 'DEL'];
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'WIS', '0', 'DEL'];
   for (const key of keys) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -320,7 +387,7 @@ function showPinModal({ title, subtitle, cancellable, onSubmit, onCancel }) {
     btn.textContent = key;
 
     btn.addEventListener('click', () => {
-      if (key === 'CLR') {
+      if (key === 'WIS') {
         currentPin = '';
         errorEl.textContent = '';
         updateDots();
@@ -344,7 +411,7 @@ function showPinModal({ title, subtitle, cancellable, onSubmit, onCancel }) {
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'ytaf-kids-btn';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.textContent = 'Annuleren';
     cancelBtn.addEventListener('click', handleCancel);
     card.appendChild(cancelBtn);
   }
@@ -367,17 +434,21 @@ function showSetPinFlow(onSuccess) {
 
   const askConfirm = () => {
     showPinModal({
-      title: 'Confirm Parent PIN',
-      subtitle: 'Re-enter your 4-digit Parent PIN',
+      title: 'Bevestig ouder-PIN',
+      subtitle: 'Voer je 4-cijferige ouder-PIN nogmaals in',
       cancellable: true,
       onSubmit: (pin) => {
         if (pin !== firstPin) {
-          showNotification('PINs did not match. Please try again.', 3000, 'red');
+          showNotification(
+            'Pincodes kwamen niet overeen. Probeer opnieuw.',
+            3000,
+            'red'
+          );
           setTimeout(() => showSetPinFlow(onSuccess), 0);
           return true;
         }
         configWrite('kidsTimerPinHash', hashPin(pin));
-        showNotification('Parent PIN saved.', 3000, 'green');
+        showNotification('Ouder-PIN opgeslagen.', 3000, 'green');
         setTimeout(() => onSuccess(), 0);
         return true;
       }
@@ -385,8 +456,8 @@ function showSetPinFlow(onSuccess) {
   };
 
   showPinModal({
-    title: 'Set Parent PIN',
-    subtitle: 'Choose a 4-digit PIN to protect Kids Timer settings',
+    title: 'Ouder-PIN instellen',
+    subtitle: 'Kies een 4-cijferige pincode om de kindertimer te beveiligen',
     cancellable: true,
     onSubmit: (pin) => {
       firstPin = pin;
@@ -403,7 +474,7 @@ function showSetPinFlow(onSuccess) {
  */
 function requireParentPin(subtitle, onVerified, onCancel) {
   showPinModal({
-    title: 'Parent PIN Required',
+    title: 'Ouder-PIN vereist',
     subtitle,
     cancellable: true,
     onSubmit: (pin) => {
@@ -430,7 +501,7 @@ function extendTime(minutes, key = currentAccountKey) {
     hideLockOverlay();
   }
   showNotification(
-    `Extended ${profile.name} by ${minutes} minutes`,
+    `${profile.name} verlengd met ${minutes} minuten`,
     4000,
     'green'
   );
@@ -438,10 +509,16 @@ function extendTime(minutes, key = currentAccountKey) {
 
 function resetTodayTimer(key = currentAccountKey) {
   const profile = getOrCreateProfile(key);
+  const today = getTodayKey();
+  const nextHistory = pruneHistory({
+    ...(profile.history || {}),
+    [today]: 0
+  });
   updateProfile(key, {
-    date: getTodayKey(),
+    date: today,
     usedSeconds: 0,
-    extraSeconds: 0
+    extraSeconds: 0,
+    history: nextHistory
   });
   if (key === currentAccountKey) {
     pendingSeconds = 0;
@@ -449,7 +526,22 @@ function resetTodayTimer(key = currentAccountKey) {
     warned1MinForKey = '';
     hideLockOverlay();
   }
-  showNotification(`Timer reset for ${profile.name}`, 4000, 'green');
+  showNotification(`Timer gereset voor ${profile.name}`, 4000, 'green');
+}
+
+function switchAccountFromLock() {
+  switchingFromLockUntil = Date.now() + 45000;
+  hideLockOverlay();
+  if (resolveRegistry) {
+    const payload = lastAccountSelectorPayload ?? {
+      startAccountSelectorCommand: {
+        nextEndpoint: {
+          browseEndpoint: { browseId: 'FEwhat_to_watch' }
+        }
+      }
+    };
+    resolveRegistry.dispatchCommand(payload);
+  }
 }
 
 function showLockOverlay() {
@@ -466,24 +558,34 @@ function showLockOverlay() {
   card.className = 'ytaf-kids-card';
 
   const heading = document.createElement('h2');
-  heading.textContent = `Time's Up, ${profile.name}!`;
+  heading.textContent = `De tijd is om, ${profile.name}!`;
   card.appendChild(heading);
 
   const subEl = document.createElement('p');
   subEl.className = 'ytaf-kids-subtitle';
   subEl.textContent =
-    'Your screen time limit for today has been reached. Ask a parent to extend or unlock.';
+    'Je schermtijd voor vandaag is op. Vraag een ouder om te verlengen of te wisselen van profiel.';
   card.appendChild(subEl);
 
   const actions = document.createElement('div');
   actions.className = 'ytaf-kids-actions';
 
+  const btnSwitch = document.createElement('button');
+  btnSwitch.type = 'button';
+  btnSwitch.className = 'ytaf-kids-btn ytaf-kids-btn-primary';
+  btnSwitch.textContent = 'Wissel van profiel (Ouder-PIN)';
+  btnSwitch.addEventListener('click', () => {
+    requireParentPin('Voer ouder-PIN in om van profiel te wisselen', () =>
+      switchAccountFromLock()
+    );
+  });
+
   const btn15 = document.createElement('button');
   btn15.type = 'button';
-  btn15.className = 'ytaf-kids-btn ytaf-kids-btn-primary';
-  btn15.textContent = 'Extend +15 min (Parent PIN)';
+  btn15.className = 'ytaf-kids-btn';
+  btn15.textContent = 'Verleng +15 min (Ouder-PIN)';
   btn15.addEventListener('click', () => {
-    requireParentPin('Enter Parent PIN to add 15 minutes', () =>
+    requireParentPin('Voer ouder-PIN in voor +15 minuten', () =>
       extendTime(15, currentAccountKey)
     );
   });
@@ -491,9 +593,9 @@ function showLockOverlay() {
   const btn30 = document.createElement('button');
   btn30.type = 'button';
   btn30.className = 'ytaf-kids-btn';
-  btn30.textContent = 'Extend +30 min (Parent PIN)';
+  btn30.textContent = 'Verleng +30 min (Ouder-PIN)';
   btn30.addEventListener('click', () => {
-    requireParentPin('Enter Parent PIN to add 30 minutes', () =>
+    requireParentPin('Voer ouder-PIN in voor +30 minuten', () =>
       extendTime(30, currentAccountKey)
     );
   });
@@ -501,13 +603,14 @@ function showLockOverlay() {
   const btnReset = document.createElement('button');
   btnReset.type = 'button';
   btnReset.className = 'ytaf-kids-btn';
-  btnReset.textContent = 'Unlock / Reset Today (Parent PIN)';
+  btnReset.textContent = 'Deblokkeer / Reset vandaag (Ouder-PIN)';
   btnReset.addEventListener('click', () => {
-    requireParentPin('Enter Parent PIN to reset today', () =>
+    requireParentPin('Voer ouder-PIN in om vandaag te resetten', () =>
       resetTodayTimer(currentAccountKey)
     );
   });
 
+  actions.appendChild(btnSwitch);
   actions.appendChild(btn15);
   actions.appendChild(btn30);
   actions.appendChild(btnReset);
@@ -523,6 +626,118 @@ function showLockOverlay() {
   });
 }
 
+function showWeeklyOverviewModal(onBackToSettings) {
+  flushUsedSeconds();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'ytaf-kids-overlay';
+
+  const card = document.createElement('div');
+  card.className = 'ytaf-kids-card';
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Weekoverzicht kijktijd';
+  card.appendChild(heading);
+
+  const subEl = document.createElement('p');
+  subEl.className = 'ytaf-kids-subtitle';
+  subEl.textContent = 'Afgelopen 7 dagen per gebruiker (alleen afspeeltijd)';
+  card.appendChild(subEl);
+
+  const listEl = document.createElement('div');
+  listEl.className = 'ytaf-kids-weekly-list';
+
+  /** @type {Array<{ key: string, label: string }>} */
+  const days = [];
+  for (let offset = 6; offset >= 0; offset--) {
+    const d = new Date();
+    d.setDate(d.getDate() - offset);
+    const key = formatDateKey(d);
+    const label = offset === 0 ? 'Vandaag' : DAY_NAMES_NL[d.getDay()] ?? '';
+    days.push({ key, label });
+  }
+
+  const profiles = getProfilesMap();
+  const profileKeys = Object.keys(profiles);
+  const todayKey = getTodayKey();
+
+  if (profileKeys.length === 0) {
+    const emptyEl = document.createElement('p');
+    emptyEl.className = 'ytaf-kids-subtitle';
+    emptyEl.textContent = 'Nog geen kijkgeschiedenis beschikbaar.';
+    listEl.appendChild(emptyEl);
+  } else {
+    for (const pKey of profileKeys) {
+      const p = getOrCreateProfile(pKey);
+      const history = p.history || {};
+      let weekTotal = 0;
+
+      const userBox = document.createElement('div');
+      userBox.className = 'ytaf-kids-weekly-user';
+
+      const daysGrid = document.createElement('div');
+      daysGrid.className = 'ytaf-kids-weekly-days';
+
+      for (const day of days) {
+        let secs = history[day.key] ?? 0;
+        if (day.key === todayKey) {
+          secs = Math.max(secs, p.usedSeconds);
+        }
+        weekTotal += secs;
+
+        const cell = document.createElement('div');
+        cell.className = 'ytaf-kids-weekly-day';
+
+        const dayLabel = document.createElement('div');
+        dayLabel.textContent = day.label;
+        cell.appendChild(dayLabel);
+
+        const timeLabel = document.createElement('strong');
+        timeLabel.textContent = formatShortHoursMinutes(secs);
+        cell.appendChild(timeLabel);
+
+        daysGrid.appendChild(cell);
+      }
+
+      const headerLine = document.createElement('div');
+      const nameStrong = document.createElement('strong');
+      nameStrong.textContent = `${p.name} (${p.isKids ? 'Kind' : 'Volwassene'})`;
+      headerLine.appendChild(nameStrong);
+      headerLine.appendChild(
+        document.createTextNode(
+          ` — Week: ${formatShortHoursMinutes(weekTotal)}`
+        )
+      );
+
+      userBox.appendChild(headerLine);
+      userBox.appendChild(daysGrid);
+      listEl.appendChild(userBox);
+    }
+  }
+
+  card.appendChild(listEl);
+
+  const closeAndBack = () => {
+    removeModal(overlay);
+    if (onBackToSettings) onBackToSettings();
+  };
+
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.className = 'ytaf-kids-btn ytaf-kids-btn-primary';
+  backBtn.textContent = 'Terug';
+  backBtn.addEventListener('click', closeAndBack);
+  card.appendChild(backBtn);
+
+  overlay.appendChild(card);
+  pushModal({
+    element: overlay,
+    onBack: closeAndBack,
+    onDigit: null,
+    onBackspace: null
+  });
+}
+
 function showManageProfilesModal(onBackToSettings) {
   const overlay = document.createElement('div');
   overlay.className = 'ytaf-kids-overlay';
@@ -531,13 +746,13 @@ function showManageProfilesModal(onBackToSettings) {
   card.className = 'ytaf-kids-card';
 
   const heading = document.createElement('h2');
-  heading.textContent = 'Manage All Profiles';
+  heading.textContent = 'Alle profielen beheren';
   card.appendChild(heading);
 
   const subEl = document.createElement('p');
   subEl.className = 'ytaf-kids-subtitle';
   subEl.textContent =
-    'Select a profile to toggle between Kids Account (with timer) and Adult Account (no timer).';
+    'Kies een profiel om te wisselen tussen Kind-account (met timer) en Volwassene (geen timer).';
   card.appendChild(subEl);
 
   const listEl = document.createElement('div');
@@ -557,7 +772,7 @@ function showManageProfilesModal(onBackToSettings) {
     if (keys.length === 0) {
       const emptyEl = document.createElement('p');
       emptyEl.className = 'ytaf-kids-subtitle';
-      emptyEl.textContent = 'No profiles detected yet.';
+      emptyEl.textContent = 'Nog geen profielen gevonden.';
       listEl.appendChild(emptyEl);
     } else {
       for (const key of keys) {
@@ -568,9 +783,9 @@ function showManageProfilesModal(onBackToSettings) {
         btn.type = 'button';
         btn.className = 'ytaf-kids-btn';
         const roleLabel = p.isKids
-          ? `Kids (${p.limitMinutes}m, ${remaining} left)`
-          : 'Adult (No Timer)';
-        btn.textContent = `${p.name}${isCurrent ? ' [Active]' : ''}: ${roleLabel}`;
+          ? `Kind (${p.limitMinutes}m, nog ${remaining})`
+          : 'Volwassene (geen timer)';
+        btn.textContent = `${p.name}${isCurrent ? ' [Actief]' : ''}: ${roleLabel}`;
         btn.addEventListener('click', () => {
           updateProfile(key, { isKids: !p.isKids });
           if (isCurrent && p.isKids) {
@@ -585,7 +800,7 @@ function showManageProfilesModal(onBackToSettings) {
     const backBtn = document.createElement('button');
     backBtn.type = 'button';
     backBtn.className = 'ytaf-kids-btn ytaf-kids-btn-primary';
-    backBtn.textContent = 'Back';
+    backBtn.textContent = 'Terug';
     backBtn.addEventListener('click', closeAndBack);
     listEl.appendChild(backBtn);
     focusFirstInModal(overlay);
@@ -611,7 +826,7 @@ function showKidsSettingsModal() {
   card.className = 'ytaf-kids-card';
 
   const heading = document.createElement('h2');
-  heading.textContent = 'Parental Controls & Kids Timer';
+  heading.textContent = 'Ouderlijk toezicht & Kindertimer';
   card.appendChild(heading);
 
   const statusEl = document.createElement('div');
@@ -643,20 +858,31 @@ function showKidsSettingsModal() {
   const btnAdd15 = document.createElement('button');
   btnAdd15.type = 'button';
   btnAdd15.className = 'ytaf-kids-btn';
-  btnAdd15.textContent = '+15 min Today';
+  btnAdd15.textContent = '+15 min vandaag';
 
   const btnReset = document.createElement('button');
   btnReset.type = 'button';
   btnReset.className = 'ytaf-kids-btn';
-  btnReset.textContent = 'Reset Today';
+  btnReset.textContent = 'Reset vandaag';
 
   rowExtra.appendChild(btnAdd15);
   rowExtra.appendChild(btnReset);
 
+  const rowOverviews = document.createElement('div');
+  rowOverviews.className = 'ytaf-kids-row';
+
   const btnManageProfiles = document.createElement('button');
   btnManageProfiles.type = 'button';
   btnManageProfiles.className = 'ytaf-kids-btn';
-  btnManageProfiles.textContent = 'Manage All Profiles...';
+  btnManageProfiles.textContent = 'Alle profielen...';
+
+  const btnWeeklyOverview = document.createElement('button');
+  btnWeeklyOverview.type = 'button';
+  btnWeeklyOverview.className = 'ytaf-kids-btn';
+  btnWeeklyOverview.textContent = 'Weekoverzicht...';
+
+  rowOverviews.appendChild(btnManageProfiles);
+  rowOverviews.appendChild(btnWeeklyOverview);
 
   const rowBottom = document.createElement('div');
   rowBottom.className = 'ytaf-kids-row';
@@ -664,12 +890,12 @@ function showKidsSettingsModal() {
   const btnChangePin = document.createElement('button');
   btnChangePin.type = 'button';
   btnChangePin.className = 'ytaf-kids-btn';
-  btnChangePin.textContent = 'Change PIN';
+  btnChangePin.textContent = 'PIN wijzigen';
 
   const btnClose = document.createElement('button');
   btnClose.type = 'button';
   btnClose.className = 'ytaf-kids-btn ytaf-kids-btn-primary';
-  btnClose.textContent = 'Close';
+  btnClose.textContent = 'Sluiten';
 
   rowBottom.appendChild(btnChangePin);
   rowBottom.appendChild(btnClose);
@@ -692,27 +918,27 @@ function showKidsSettingsModal() {
       }
     };
 
-    appendStatusLine('Master Timer: ', enabled ? 'Enabled' : 'Disabled');
+    appendStatusLine('Hoofdschakelaar timer: ', enabled ? 'Aan' : 'Uit');
     statusEl.appendChild(document.createElement('br'));
-    appendStatusLine('Logged-in Account: ', profile.name);
+    appendStatusLine('Ingelogd profiel: ', profile.name);
     statusEl.appendChild(document.createElement('br'));
     appendStatusLine(
-      'Account Type: ',
-      profile.isKids ? 'Kids Account (Timer Active)' : 'Adult Account (No Timer)'
+      'Type account: ',
+      profile.isKids ? 'Kind-account (timer actief)' : 'Volwassene (geen timer)'
     );
     if (profile.isKids) {
       statusEl.appendChild(document.createElement('br'));
       appendStatusLine(
-        'Remaining Today: ',
+        'Resterend vandaag: ',
         formatDuration(remaining),
-        ` (Limit: ${profile.limitMinutes} min)`
+        ` (Limiet: ${profile.limitMinutes} min)`
       );
     }
 
-    btnToggleTimer.textContent = `Master Kids Timer: ${enabled ? 'ON' : 'OFF'}`;
-    btnToggleKidsProfile.textContent = `Set "${profile.name}": ${profile.isKids ? 'Kids Account (Timer)' : 'Adult Account (No Timer)'}`;
-    btnLimit.textContent = `Daily Limit for "${profile.name}": ${profile.limitMinutes} min (Cycle)`;
-    btnAutoDetect.textContent = `Auto-detect YouTube Kids: ${autoDetect ? 'ON' : 'OFF'}`;
+    btnToggleTimer.textContent = `Kindertimer: ${enabled ? 'AAN' : 'UIT'}`;
+    btnToggleKidsProfile.textContent = `Profiel "${profile.name}": ${profile.isKids ? 'Kind-account (timer)' : 'Volwassene (geen timer)'}`;
+    btnLimit.textContent = `Daglimiet "${profile.name}": ${profile.limitMinutes} min (klik om te wisselen)`;
+    btnAutoDetect.textContent = `YouTube Kids auto-detectie: ${autoDetect ? 'AAN' : 'UIT'}`;
   };
 
   btnToggleTimer.addEventListener('click', () => {
@@ -762,6 +988,11 @@ function showKidsSettingsModal() {
     showManageProfilesModal(() => showKidsSettingsModal());
   });
 
+  btnWeeklyOverview.addEventListener('click', () => {
+    closeSettings();
+    showWeeklyOverviewModal(() => showKidsSettingsModal());
+  });
+
   btnChangePin.addEventListener('click', () => {
     closeSettings();
     showSetPinFlow(() => showKidsSettingsModal());
@@ -774,7 +1005,7 @@ function showKidsSettingsModal() {
   actions.appendChild(btnLimit);
   actions.appendChild(btnAutoDetect);
   actions.appendChild(rowExtra);
-  actions.appendChild(btnManageProfiles);
+  actions.appendChild(rowOverviews);
   actions.appendChild(rowBottom);
 
   card.appendChild(actions);
@@ -796,7 +1027,7 @@ export function openParentalControls() {
     return;
   }
 
-  requireParentPin('Enter Parent PIN to open Kids Timer settings', () =>
+  requireParentPin('Voer ouder-PIN in om instellingen te openen', () =>
     showKidsSettingsModal()
   );
 }
@@ -893,7 +1124,8 @@ function setActiveAccount(nextKey, nextName, autoIsKids = false) {
     pendingSeconds = 0;
     warned5MinForKey = '';
     warned1MinForKey = '';
-  } else if (nextName && nextName !== 'Current Account') {
+    switchingFromLockUntil = 0;
+  } else if (nextName && nextName !== 'Huidig account') {
     currentAccountName = nextName;
   }
 
@@ -1018,6 +1250,7 @@ document.addEventListener('keyup', handleModalKeyEvent, true);
 
 async function initAccountHooks() {
   const registry = await ResolveCommandRegistry.getInstance();
+  resolveRegistry = registry;
   const prevAccountSelectorHook = registry.getHook(
     'startAccountSelectorCommand'
   );
@@ -1025,6 +1258,7 @@ async function initAccountHooks() {
   registry.setHook(
     'startAccountSelectorCommand',
     (resolveCommand, payload, extra) => {
+      lastAccountSelectorPayload = payload;
       const proceed = () => {
         if (prevAccountSelectorHook) {
           prevAccountSelectorHook(resolveCommand, payload, extra);
@@ -1036,10 +1270,14 @@ async function initAccountHooks() {
       if (
         !configRead('autoAccountSelect') &&
         configRead('kidsTimerEnabled') &&
-        isCurrentAccountKids()
+        isCurrentAccountKids() &&
+        Date.now() > switchingFromLockUntil
       ) {
         pausePlayback();
-        requireParentPin('Enter Parent PIN to switch account', proceed);
+        requireParentPin(
+          'Voer ouder-PIN in om van account te wisselen',
+          proceed
+        );
         return;
       }
       proceed();
@@ -1054,7 +1292,7 @@ async function initAccountHooks() {
       'isSameIdentity' in context &&
       context.isSameIdentity === false
     ) {
-      setActiveAccount(DEFAULT_ACCOUNT_KEY, 'Current Account', false);
+      setActiveAccount(DEFAULT_ACCOUNT_KEY, 'Huidig account', false);
       setTimeout(() => refreshActiveAccountFromDom(), 1500);
     }
     resolveCommand(payload, extra);
@@ -1103,20 +1341,20 @@ function startTimerLoop() {
 
     const enabled = configRead('kidsTimerEnabled');
     const isKids = isCurrentAccountKids();
-
-    if (!enabled || !isKids) {
-      hideLockOverlay();
-      return;
-    }
-
     const profile = getOrCreateProfile(currentAccountKey, currentAccountName);
-    const remaining = getProfileRemainingSeconds(profile, currentAccountKey);
 
-    if (remaining <= 0) {
-      flushUsedSeconds();
-      showLockOverlay();
-      pausePlayback();
-      return;
+    if (enabled && isKids) {
+      const remaining = getProfileRemainingSeconds(profile, currentAccountKey);
+      if (remaining <= 0) {
+        flushUsedSeconds();
+        if (Date.now() >= switchingFromLockUntil) {
+          showLockOverlay();
+        }
+        pausePlayback();
+        return;
+      }
+    } else {
+      hideLockOverlay();
     }
 
     if (
@@ -1127,37 +1365,43 @@ function startTimerLoop() {
       const state = playerInstance.getPlayerStateObject();
       if (state.isPlaying && !playerInstance.isInline()) {
         pendingSeconds += 1;
-        const updatedRemaining = getProfileRemainingSeconds(
-          profile,
-          currentAccountKey
-        );
 
-        if (
-          updatedRemaining === 300 &&
-          warned5MinForKey !== currentAccountKey
-        ) {
-          warned5MinForKey = currentAccountKey;
-          showNotification(
-            `Kids Timer (${profile.name}): 5 minutes remaining`,
-            5000,
-            'yellow'
+        if (enabled && isKids) {
+          const updatedRemaining = getProfileRemainingSeconds(
+            profile,
+            currentAccountKey
           );
-        } else if (
-          updatedRemaining === 60 &&
-          warned1MinForKey !== currentAccountKey
-        ) {
-          warned1MinForKey = currentAccountKey;
-          showNotification(
-            `Kids Timer (${profile.name}): 1 minute remaining`,
-            5000,
-            'red'
-          );
+
+          if (
+            updatedRemaining === 300 &&
+            warned5MinForKey !== currentAccountKey
+          ) {
+            warned5MinForKey = currentAccountKey;
+            showNotification(
+              `Kindertimer (${profile.name}): nog 5 minuten`,
+              5000,
+              'yellow'
+            );
+          } else if (
+            updatedRemaining === 60 &&
+            warned1MinForKey !== currentAccountKey
+          ) {
+            warned1MinForKey = currentAccountKey;
+            showNotification(
+              `Kindertimer (${profile.name}): nog 1 minuut`,
+              5000,
+              'red'
+            );
+          }
+
+          if (updatedRemaining <= 0) {
+            flushUsedSeconds();
+            showLockOverlay();
+            return;
+          }
         }
 
-        if (updatedRemaining <= 0) {
-          flushUsedSeconds();
-          showLockOverlay();
-        } else if (pendingSeconds >= 10) {
+        if (pendingSeconds >= 10) {
           flushUsedSeconds();
         }
       }
